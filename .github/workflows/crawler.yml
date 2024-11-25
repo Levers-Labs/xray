@@ -1,0 +1,93 @@
+name: Parallel Crawler
+
+on:
+  workflow_dispatch:
+    inputs:
+      urlset:
+        description: 'Name of the URL set to crawl'
+        required: true
+      batch-size:
+        description: 'Number of URLs per runner'
+        default: '10'
+        required: true
+      parallel-runners:
+        description: 'Number of parallel runners'
+        default: '5'
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.split.outputs.batches }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Create sample urls.yml if not exists
+        run: |
+          if [ ! -f urls.yml ]; then
+            echo "urlSets:" > urls.yml
+            echo "  - name: sample" >> urls.yml
+            echo "    csvPath: ./urls/sample.csv" >> urls.yml
+            echo "    enabled: true" >> urls.yml
+            mkdir -p urls
+            echo "url" > urls/sample.csv
+            echo "https://example.com" >> urls/sample.csv
+          fi
+      
+      - name: Split URLs into batches
+        id: split
+        run: |
+          BATCHES=$(npx ts-node scripts/create-batches.ts ${{ github.event.inputs.urlset }} ${{ github.event.inputs.batch-size }})
+          echo "batches=$BATCHES" >> $GITHUB_OUTPUT
+
+  crawl:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        batch: ${{ fromJson(needs.prepare.outputs.batches) }}
+      fail-fast: false
+      max-parallel: ${{ github.event.inputs.parallel-runners }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Crawl batch
+        run: npx ts-node scripts/crawl-batch.ts '${{ toJson(matrix.batch) }}'
+        
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: crawl-results-${{ strategy.job-index }}
+          path: |
+            raw_crawl_dns/
+            raw_crawl_content/
+            crawl_failures/
+
+  combine-results:
+    needs: crawl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/download-artifact@v3
+      
+      - name: List all results
+        run: |
+          echo "Crawl Results:"
+          find . -type f -name "*.json" | while read file; do
+            echo "Found result file: $file"
+          done

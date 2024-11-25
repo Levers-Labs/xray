@@ -1,0 +1,5 @@
+urlSets:
+  - name: tech-companies
+    description: Major tech company websites
+    csvPath: ./urls/tech-companies.csv
+    enabled: true

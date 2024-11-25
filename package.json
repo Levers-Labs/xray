@@ -1,0 +1,31 @@
+{
+  "name": "xray",
+  "version": "1.0.0",
+  "description": "Domain analysis utility",
+  "main": "dist/index.js",
+  "bin": {
+    "xray": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "crawl-batch": "ts-node scripts/crawl-batch.ts"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^11.0.0",
+    "csv-parse": "^5.5.0",
+    "js-yaml": "^4.1.0",
+    "puppeteer": "^21.5.0",
+    "whois": "^2.13.1",
+    "@aws-sdk/client-s3": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.5",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.1"
+  }
+}

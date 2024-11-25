@@ -1,0 +1,44 @@
+rules:
+  - name: next-version
+    categories: ['framework', 'next.js']
+    rule: window.next?.version
+
+  - name: content-type-and-security
+    categories: ['headers', 'security']
+    rule: |
+      {
+        contentType: headers['content-type'],
+        securityHeaders: {
+          xframe: headers['x-frame-options'],
+          hsts: headers['strict-transport-security'],
+          csp: headers['content-security-policy']
+        }
+      }
+
+  - name: meta-tags
+    categories: ['meta', 'seo']
+    rule: |
+      {
+        description: $('meta[name="description"]').attr('content'),
+        keywords: $('meta[name="keywords"]').attr('content'),
+        ogTitle: $('meta[property="og:title"]').attr('content')
+      }
+
+  - name: analytics-presence
+    categories: ['analytics']
+    rule: |
+      {
+        hasGoogleAnalytics: html.includes('gtag') || $('script[src*="google-analytics"]').length > 0,
+        hasGTM: html.includes('googletagmanager'),
+        hasSegment: html.includes('segment.com') || html.includes('analytics.segment.com')
+      }
+
+  - name: framework-detection
+    categories: ['framework']
+    rule: |
+      {
+        next: window.next?.version,
+        react: window.__REACT_VERSION__ || $('script[src*="react"]').length > 0,
+        vue: window.Vue?.version || $('script[src*="vue"]').length > 0,
+        angular: window.angular?.version || $('script[src*="angular"]').length > 0
+      }

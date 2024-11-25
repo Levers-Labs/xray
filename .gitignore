@@ -1,0 +1,45 @@
+# Build output
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# Crawl results
+raw_crawl_dns/
+raw_crawl_content/
+evaluated_rules/
+crawl_failures/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/_logs/
+
+# Test coverage
+coverage/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Temporary files
+tmp/
+temp/
