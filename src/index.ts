@@ -6,33 +6,128 @@ import { StorageService } from './services/storage';
 import { ConfigManager } from './utils/config';
 import { RuleManager } from './services/ruleManager';
 import type { UrlSet } from './types';
+import downloadCruxDomains from './services/pullCruxDomains';
+import { v4 as uuidv4 } from 'uuid';
 
 const storage = new StorageService();
 const configManager = new ConfigManager();
 const ruleManager = new RuleManager();
 
-async function crawlUrl(url: string): Promise<void> {
+async function crawlUrl(
+  url: string,
+  loadToS3: boolean = false,
+  saveToLocal: boolean = true
+): Promise<void> {
   try {
     // Get DNS info
     const dnsInfo = await getDnsInfo(url);
-    await storage.saveDnsInfo(dnsInfo, url);
-    
+    if (saveToLocal) {
+      await storage.saveDnsInfo(dnsInfo, url);
+    }
+    if (loadToS3) {
+      await storage.uploadToS3(
+        JSON.stringify(dnsInfo),
+        'raw_crawl_dns',
+        url.replace(/^(https?:\/\/)/, '')
+      );
+    }
     try {
       // Crawl website
-      const crawlResult = await crawlWebsite(url);
-      await storage.saveCrawlContent(crawlResult);
+      const crawlResult = await crawlWebsite(
+        url,
+        3,
+        loadToS3,
+        saveToLocal
+      );
+      if (saveToLocal) {
+        if (crawlResult) {
+          await storage.saveCrawlContent(crawlResult);
+        }
+      }
+      if (loadToS3) {
+        await storage.uploadToS3(
+          JSON.stringify(crawlResult),
+          'raw_crawl_content',
+          url.replace(/^(https?:\/\/)/, '')
+        );
+      }
       console.log(`Successfully crawled ${url}`);
     } catch (error: any) {
-      await storage.saveCrawlFailure({
-        crawl_time: new Date().toISOString(),
-        url,
-        response_code: error.response?.status || 500
-      });
+      if (saveToLocal) {
+        await storage.saveCrawlFailure({
+          crawl_time: new Date().toISOString(),
+          url,
+          response_code: error.response?.status || 500
+        });
+      }
+      if (loadToS3) {
+        await storage.uploadToS3(
+          JSON.stringify({ url, response_code: error.response?.status || 500 }),
+          'crawl_failures',
+          url.replace(/^(https?:\/\/)/, '')
+        );
+      }
       console.error(`Failed to crawl ${url}: ${error.message}`);
     }
   } catch (error: any) {
     console.error(`Error analyzing ${url}: ${error.message}`);
   }
+}
+async function batchSaveToS3(
+  urls: string[],
+  loadToS3: boolean = false
+): Promise<void> {
+  const dnsInfos = [];
+  const crawlResults = [];
+  const crawlFailures = [];
+
+  console.log(`Processing ${urls.length} URLs...`);
+  console.log(urls);
+
+  for (const url of urls) {
+    const dnsInfo = await getDnsInfo(url);
+    dnsInfos.push(dnsInfo);
+    try {
+      const crawlResult = await crawlWebsite(url, 1, loadToS3, false);
+      crawlResults.push(crawlResult);
+    } catch (error: any) {
+      crawlFailures.push({
+        crawl_time: new Date().toISOString(),
+        url,
+        response_code: error.response?.status || 500
+      });
+    }
+  }
+
+  const uploadTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const fileId = uuidv4();
+
+  // convert arrays to ndjson strings
+  const dnsInfosNdjson = dnsInfos.map(dnsInfo => JSON.stringify(dnsInfo)).join('\n');
+  const crawlResultsNdjson = crawlResults.map(crawlResult => JSON.stringify(crawlResult)).join('\n');
+  const crawlFailuresNdjson = crawlFailures.map(crawlFailure => JSON.stringify(crawlFailure)).join('\n');
+  try {
+    if (loadToS3) {
+      await storage.uploadToS3(
+        dnsInfosNdjson,
+        'raw_crawl_dns',
+        `${uploadTimestamp}_${fileId}.ndjson`
+      );
+      await storage.uploadToS3(
+        crawlResultsNdjson,
+        'raw_crawl_content',
+        `${uploadTimestamp}_${fileId}.ndjson`
+      );
+      await storage.uploadToS3(
+        crawlFailuresNdjson,
+        'crawl_failures',
+        `${uploadTimestamp}_${fileId}.ndjson`
+      );
+    }
+  }
+  catch (error: any) {
+    console.error(`Error uploading to S3: ${error.message}`);
+  }  
 }
 
 const program = new Command();
@@ -101,15 +196,59 @@ program
   .command('crawl-set')
   .description('Crawl all URLs in a specified set')
   .argument('<setName>', 'Name of the URL set to crawl')
-  .action(async (setName: string) => {
+  .option('--s3', 'Save crawl results to S3')
+  .option('--no-local', 'Do not save crawl results locally')
+  .action(async (setName: string, options: { s3?: boolean, local: boolean }) => {
     try {
+      const loadToS3 = options.s3;
+      const saveToLocal = options.local;
       const urls = await configManager.getUrlsForSet(setName);
       console.log(`Found ${urls.length} URLs in set "${setName}"`);
       
       for (const url of urls) {
         console.log(`\nProcessing ${url}...`);
-        await crawlUrl(url);
+        await crawlUrl(url, loadToS3, saveToLocal);
       }
+    } catch (error: any) {
+      console.error(`Error processing URL set: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('crawl-crux-domains')
+  .description('Crawl URLs concurrently')
+  .argument('<setName>', 'Name of the URL set to crawl')
+  .option('-b, --batch-size <number>', 'Number of concurrent crawls', '25')
+  .option('--s3', 'Save crawl results to S3')
+  .option('--no-local', 'Do not save crawl results locally')
+  .action(async (
+    setName: string,
+    options: {
+      batchSize: string,
+      s3?: boolean,
+      local: boolean
+    }) => {
+    try {
+      const loadToS3 = options.s3;
+      const saveToLocal = options.local;
+      await downloadCruxDomains();
+      const urls = await configManager.getUrlsForCompressedSet(setName);
+      console.log(`Found ${urls.length} URLs in set "${setName}"`);
+
+      // Only the first 250 urls for testing
+      const testUrls = urls.slice(0, 500);
+      
+      const concurrency = parseInt(options.batchSize, 25);
+      const chunks = testUrls.reduce((acc, _, i) => {
+        if (i % concurrency === 0) acc.push(testUrls.slice(i, i + concurrency));
+
+        return acc;
+      }, [] as string[][]);
+
+      await Promise.all(chunks.map(async (chunk) => {
+        await batchSaveToS3(chunk, loadToS3);
+      }));
     } catch (error: any) {
       console.error(`Error processing URL set: ${error.message}`);
       process.exit(1);

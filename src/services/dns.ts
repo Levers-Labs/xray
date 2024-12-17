@@ -54,12 +54,10 @@ async function parseWhoisData(data: string): Promise<ParsedWhois> {
     // Extract nameservers
     const nameserverMatches = data.matchAll(/Name Server:\s*([^\n]+)/g);
     whoisData.nameservers = Array.from(nameserverMatches, match => match[1].trim());
-    console.log('Found nameservers:', whoisData.nameservers);
 
     // Extract status
     const statusMatches = data.matchAll(/Domain Status:\s*([^\s]+)\s+[^\n]+/g);
     whoisData.status = Array.from(statusMatches, match => match[1].trim());
-    console.log('Found status entries:', whoisData.status);
 
     // Extract organization and country
     const orgMatch = data.match(/Registrant Organization:\s*([^\n]+)/);
@@ -122,8 +120,8 @@ export async function getDnsInfo(url: string): Promise<DnsInfo> {
 
     // WHOIS lookup with retries
     let whoisData = '';
-    let retries = 3;
-    let delay = 2000;
+    let retries = 1;
+    let delay = 1000;
     
     while (retries > 0) {
       try {
@@ -153,24 +151,41 @@ export async function getDnsInfo(url: string): Promise<DnsInfo> {
       ipv6
     };
 
-    console.log('\nFinal DNS result:', result);
     return result;
   } catch (error: any) {
     console.error(`\nDNS lookup error:`, error);
-    return {
-      registrar: "Unknown",
-      creationDate: "Unknown",
-      cname: "",
-      hostname: new URL(url).hostname,
-      ipv4: "",
-      ipv6: "",
-      expirationDate: "Unknown",
-      lastUpdated: "Unknown",
-      nameservers: [],
-      status: [],
-      registrantOrganization: "Unknown",
-      registrantCountry: "Unknown",
-      whoisServer: "Unknown"
-    };
+    try {
+      return {
+        registrar: "Unknown",
+        creationDate: "Unknown",
+        cname: "",
+        hostname: new URL(url).hostname,
+        ipv4: "",
+        ipv6: "",
+        expirationDate: "Unknown",
+        lastUpdated: "Unknown",
+        nameservers: [],
+        status: [],
+        registrantOrganization: "Unknown",
+        registrantCountry: "Unknown",
+        whoisServer: "Unknown"
+      };
+    } catch (error) {
+      return {
+        registrar: "Unknown",
+        creationDate: "Unknown",
+        cname: "",
+        hostname: "Unknown",
+        ipv4: "",
+        ipv6: "",
+        expirationDate: "Unknown",
+        lastUpdated: "Unknown",
+        nameservers: [],
+        status: [],
+        registrantOrganization: "Unknown",
+        registrantCountry: "Unknown",
+        whoisServer: "Unknown"
+      };
+    }
   }
 }
