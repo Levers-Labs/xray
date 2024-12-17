@@ -77,7 +77,9 @@ To enable AWS S3 storage, set these environment variables:
 ```bash
 export AWS_ACCESS_KEY_ID=your_key
 export AWS_SECRET_ACCESS_KEY=your_secret
+export AWS_SESSION_TOKEN=your_session_token
 export AWS_REGION=your_region
+export AWS_BUCKET_NAME=your_bucket_name
 ```
 
 ## Usage
@@ -90,6 +92,9 @@ xray crawl https://example.com
 
 # Process a URL set
 xray crawl-set tech-companies
+
+# Process a URL set and save to S3, and not locally
+xray crawl-set tech-companies --s3 true --no-local false
 
 # Process all enabled URL sets
 xray crawl-all

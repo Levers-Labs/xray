@@ -1,99 +1,66 @@
-import puppeteer from 'puppeteer';
 import { CrawlResult } from '../types';
 import RuleManager from './ruleManager';
+import puppeteer, { Browser as PuppeteerBrowser } from 'puppeteer';
+import playwright, { Browser as PlaywrightBrowser } from 'playwright';
 
 export const ruleManager = new RuleManager();
 
-export async function crawlWebsite(url: string, maxRetries = 3): Promise<CrawlResult> {
-  let browser;
+export async function crawlWebsite(
+  url: string,
+  maxRetries: number = 1,
+  loadToS3: boolean = false,
+  saveToLocal: boolean = true
+): Promise<CrawlResult | undefined> {
+  let browser: PuppeteerBrowser | PlaywrightBrowser | undefined;
   let lastError: any;
-  
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
+      // Puppeteer browser launch
       browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
       });
 
       const page = await browser.newPage();
-      
-      // Set a reasonable viewport
       await page.setViewport({ width: 1280, height: 800 });
+      await page.setUserAgent(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+      );
 
-      // Set user agent
-      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+      const response = await page.goto(url, { waitUntil: 'networkidle0', timeout: 10000 });
+      if (!response) throw new Error('No response received from page');
 
-      // Get response and window object
-      const response = await page.goto(url, {
-        waitUntil: 'networkidle0',
-        timeout: 30000
-      });
-
-      if (!response) {
-        throw new Error('No response received from page');
-      }
-
-      // Get headers
       const headers = response.headers();
-
-      // Get HTML content
       const html = await page.content();
+      const js_urls = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('script[src]'))
+          .map((el) => el.getAttribute('src'))
+          .filter(Boolean) as string[]
+      );
+      const css_urls = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+          .map((el) => el.getAttribute('href'))
+          .filter(Boolean) as string[]
+      );
 
-      // Extract JS and CSS URLs
-      const js_urls = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('script[src]'))
-          .map(el => el.getAttribute('src'))
-          .filter(Boolean) as string[];
-      });
-
-      const css_urls = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
-          .map(el => el.getAttribute('href'))
-          .filter(Boolean) as string[];
-      });
-
-      // Get window object properties
       const windowProps = await page.evaluate(() => {
-        const getCircularReplacer = () => {
-          const seen = new WeakSet();
-          return (key: string, value: any) => {
-            if (typeof value === "object" && value !== null) {
-              if (seen.has(value)) {
-                return '[Circular]';
-              }
-              seen.add(value);
-            }
-            return value;
-          };
-        };
+        const seen = new WeakSet();
+        const getCircularReplacer = () => (key: string, value: any) =>
+          typeof value === 'object' && value !== null
+            ? seen.has(value)
+              ? '[Circular]'
+              : (seen.add(value), value)
+            : value;
 
-        // Capture the window object, handling circular references
         const windowCopy: any = {};
         for (const prop in window) {
           try {
-            if (typeof window[prop] !== 'function') {
-              windowCopy[prop] = window[prop];
-            }
-          } catch (e) {
+            if (typeof window[prop] !== 'function') windowCopy[prop] = window[prop];
+          } catch {
             windowCopy[prop] = '[Unable to serialize]';
           }
         }
-
-        // Special handling for Next.js properties
-        if ('next' in window) {
-          try {
-            windowCopy.next = {
-              version: (window as any).next?.version,
-              // Add other Next.js specific properties you're interested in
-              isServer: (window as any).next?.isServer,
-              isFallback: (window as any).next?.isFallback,
-              isPreview: (window as any).next?.isPreview
-            };
-          } catch (e) {
-            windowCopy.next = '[Error capturing Next.js data]';
-          }
-        }
-
         return JSON.stringify(windowCopy, getCircularReplacer());
       });
 
@@ -104,36 +71,101 @@ export async function crawlWebsite(url: string, maxRetries = 3): Promise<CrawlRe
         window: JSON.parse(windowProps),
         html,
         js_urls,
-        css_urls
+        css_urls,
       };
 
-      // Evaluate rules
-      console.log('Starting rule evaluation for URL:', url);
+      await ruleManager.evaluateAllRules(
+        url,
+        crawlResult.crawl_time,
+        crawlResult.headers,
+        crawlResult.window,
+        crawlResult.html,
+        loadToS3,
+        saveToLocal
+      );
+
+      return crawlResult;
+    } catch (error) {
+      console.error(`Attempt ${attempt + 1} failed with Puppeteer:`, error);
+
+      // Fallback to Playwright
       try {
+        browser = await playwright.chromium.launch({
+          headless: true,
+          args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        });
+
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.setViewportSize({ width: 1280, height: 800 });
+
+        const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 10000 });
+        if (!response) throw new Error('No response received from page');
+
+        const headers = response.headers();
+        const html = await page.content();
+        const js_urls = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('script[src]'))
+            .map((el) => el.getAttribute('src'))
+            .filter(Boolean) as string[]
+        );
+        const css_urls = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+            .map((el) => el.getAttribute('href'))
+            .filter(Boolean) as string[]
+        );
+
+        const windowProps = await page.evaluate(() => {
+          const seen = new WeakSet();
+          const getCircularReplacer = () => (key: string, value: any) =>
+            typeof value === 'object' && value !== null
+              ? seen.has(value)
+                ? '[Circular]'
+                : (seen.add(value), value)
+              : value;
+
+          const windowCopy: any = {};
+          for (const prop in window) {
+            try {
+              if (typeof window[prop] !== 'function') windowCopy[prop] = window[prop];
+            } catch {
+              windowCopy[prop] = '[Unable to serialize]';
+            }
+          }
+          return JSON.stringify(windowCopy, getCircularReplacer());
+        });
+
+        const crawlResult: CrawlResult = {
+          crawl_time: new Date().toISOString(),
+          url,
+          headers,
+          window: JSON.parse(windowProps),
+          html,
+          js_urls,
+          css_urls,
+        };
+
         await ruleManager.evaluateAllRules(
           url,
           crawlResult.crawl_time,
           crawlResult.headers,
           crawlResult.window,
-          crawlResult.html
+          crawlResult.html,
+          loadToS3,
+          saveToLocal
         );
-        console.log('Rule evaluation completed successfully');
-      } catch (ruleError) {
-        console.error('Error evaluating rules:', ruleError);
-      }
 
-      await browser.close();
-      return crawlResult;
-    } catch (error) {
-      if (browser) {
-        await browser.close();
+        return crawlResult;
+      } catch (playwrightError) {
+        console.error(`Attempt ${attempt + 1} failed with Playwright:`, playwrightError);
+        lastError = playwrightError;
       }
-      console.log(`Attempt ${attempt + 1} failed:`, error);
-      lastError = error;
-      if (attempt < maxRetries - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
-      }
+    } finally {
+      if (browser) await browser.close();
     }
+
+    // Exponential backoff
+    if (attempt < maxRetries - 1) await new Promise((res) => setTimeout(res, 1000 * 2 ** attempt));
   }
 
   throw lastError;
