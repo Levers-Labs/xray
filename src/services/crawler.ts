@@ -1,6 +1,8 @@
 import puppeteer from 'puppeteer';
 import { CrawlResult } from '../types';
 import RuleManager from './ruleManager';
+import dotenv from 'dotenv';
+dotenv.config();
 
 export const ruleManager = new RuleManager();
 
@@ -10,18 +12,29 @@ export async function crawlWebsite(url: string, maxRetries = 3): Promise<CrawlRe
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: {
+            "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
+            "Content-Type": "application/json",
+          } as any,
+          body: JSON.stringify({
+          projectId: process.env.BROWSERBASE_PROJECT_ID,
+          browserSettings: {
+            advancedStealth: true, // Needed for the best anti-bot bypassing.
+          },
+          proxies: true, // You can disable these if you don't need them. I'd recommend disabling for the first request.
+        }),
       });
 
-      const page = await browser.newPage();
-      
-      // Set a reasonable viewport
-      await page.setViewport({ width: 1280, height: 800 });
+      const session = await sessionRequest.json();
 
-      // Set user agent
-      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+      browser = await puppeteer.connect({
+        browserWSEndpoint: session.connectUrl
+      });
+
+      const pages = await browser.pages();
+      const page = pages[0];
 
       // Get response and window object
       const response = await page.goto(url, {
