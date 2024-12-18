@@ -40,20 +40,18 @@ export async function crawlWebsite(
 
       const pages = await browser.pages();
       const page = pages[0];
-      // Puppeteer browser launch
-      browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+
+      // Get response and window object
+      const response = await page.goto(url, {
+        waitUntil: 'networkidle0',
+        timeout: 30000
       });
 
-      await page.setViewport({ width: 1280, height: 800 });
-      await page.setUserAgent(
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-      );
+      if (!response) {
+        throw new Error('No response received from page');
+      }
 
-      const response = await page.goto(url, { waitUntil: 'networkidle0', timeout: 10000 });
-      if (!response) throw new Error('No response received from page');
-
+      // Get headers
       const headers = response.headers();
       const html = await page.content();
       const js_urls = await page.evaluate(() =>
