@@ -21,8 +21,10 @@
     "csv-parse": "^5.5.0",
     "dotenv": "^16.4.7",
     "js-yaml": "^4.1.0",
-    "puppeteer": "^21.5.0",
-    "whois": "^2.13.1"
+    "puppeteer": "^23.11.0",
+    "uuid": "^11.0.3",
+    "whois": "^2.13.1",
+    "xz": "^2.0.2"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.5",
