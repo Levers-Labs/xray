@@ -3,3 +3,7 @@ urlSets:
     description: Major tech company websites
     csvPath: ./urls/tech-companies.csv
     enabled: true
+  - name: crux-domains
+    description: Websites with Core Web Vitals data
+    csvPath: ./urls/crux-domains.txt.xz
+    enabled: true

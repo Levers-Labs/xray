@@ -1,6 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { DnsInfo, CrawlResult, CrawlFailure } from '../types';
+import { v4 as uuidv4 } from 'uuid';
+
+const AWS = require('aws-sdk');
 
 export class StorageService {
   private getFilename(url: string): string {
@@ -36,7 +39,7 @@ export class StorageService {
       await fs.mkdir(dirPath, { recursive: true });
       await fs.writeFile(
         path.join(dirPath, filename),
-        JSON.stringify(crawlResult, null, 2),
+        JSON.stringify(crawlResult),
         'utf8'
       );
 
@@ -62,6 +65,32 @@ export class StorageService {
       console.log(`Crawl failure saved to ${dirPath}/${filename}`);
     } catch (error: any) {
       console.error(`Error saving crawl failure: ${error.message}`);
+      throw error;
+    }
+  }
+  async uploadToS3(data: string, dirPath: string, filename: string): Promise<void> {
+    
+    const s3 = new AWS.S3({
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      sessionToken: process.env.AWS_SESSION_TOKEN
+    });
+
+    const saveFilenameWithTimestamp = `${filename}_${uuidv4()}.ndjson`;
+
+    const params = {
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: `${dirPath}/${saveFilenameWithTimestamp}`,
+      Body: data,
+      ContentType: 'application/x-ndjson'
+    };
+
+    try {
+      console.log(`Uploading to S3...`);
+      await s3.putObject(params).promise();
+      console.log(`Successfully uploaded to S3.`);
+    } catch (error: any) {
+      console.error(`Error uploading to S3: ${error.message}`);
       throw error;
     }
   }

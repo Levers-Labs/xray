@@ -1,4 +1,13 @@
-url,category,notes
-https://www.vercel.com,hosting,deployment platform
-https://www.netlify.com,hosting,deployment platform
-https://www.digitalocean.com,cloud,infrastructure provider
+url
+https://www.vercel.com
+https://www.netlify.com
+https://www.digitalocean.com
+https://www.heroku.com
+https://www.cloudflare.com
+https://www.aws.amazon.com
+https://www.microsoft.com
+https://www.google.com
+https://www.fastly.com
+https://www.linode.com
+https://www.ibm.com
+https://www.oracle.com

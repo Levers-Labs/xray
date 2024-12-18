@@ -4,6 +4,9 @@ import yaml from 'js-yaml';
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { Rule, RuleConfig, EvaluatedRule } from '../types';
+import { StorageService } from './storage';
+
+const storage = new StorageService();
 
 export class RuleManager {
   private configPath: string;
@@ -21,10 +24,8 @@ export class RuleManager {
       console.log('Attempting to load rules from absolute path:', resolvedPath);
       
       const fileContents = await fs.readFile(resolvedPath, 'utf8');
-      console.log('Raw file contents:', fileContents);
       
       const config = yaml.load(fileContents) as RuleConfig;
-      console.log('Parsed rules:', config);
       return config;
     } catch (error) {
       console.error('Error loading rules:', error);
@@ -89,7 +90,9 @@ export class RuleManager {
     crawlTime: string,
     headers: Record<string, any>,
     windowObj: any,
-    htmlContent: string
+    htmlContent: string,
+    loadToS3: boolean = false,
+    saveToLocal: boolean = true
   ): Promise<void> {
     console.log(`Evaluating rule: ${rule.name} for URL: ${url}`);
     
@@ -116,10 +119,19 @@ export class RuleManager {
       const filePath = path.join(this.outputDir, filename);
       console.log(`Writing rule evaluation to: ${filePath}`);
       
-      await fs.writeFile(
-        filePath,
-        JSON.stringify(evaluatedRule, null, 2)
-      );
+      if (saveToLocal) {
+        await fs.writeFile(
+          filePath,
+          JSON.stringify(evaluatedRule)
+        );
+      }
+      if (loadToS3) {
+        await storage.uploadToS3(
+          JSON.stringify(evaluatedRule),
+          'evaluated_rules',
+          filename
+        );
+      };
 
       console.log(`Successfully evaluated rule: ${rule.name}`);
     } catch (error) {
@@ -132,13 +144,24 @@ export class RuleManager {
     crawlTime: string,
     headers: Record<string, any>,
     windowObj: any,
-    htmlContent: string
+    htmlContent: string,
+    loadToS3: boolean = false,
+    saveToLocal: boolean = true
   ): Promise<void> {
     console.log('Starting evaluation of all rules');
     const config = await this.loadRules();
     
     for (const rule of config.rules) {
-      await this.evaluateRule(rule, url, crawlTime, headers, windowObj, htmlContent);
+      await this.evaluateRule(
+        rule,
+        url,
+        crawlTime,
+        headers,
+        windowObj,
+        htmlContent,
+        loadToS3,
+        saveToLocal
+      );
     }
     console.log('Completed evaluation of all rules');
   }

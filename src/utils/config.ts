@@ -1,8 +1,10 @@
 import fs from 'fs/promises';
 import yaml from 'js-yaml';
 import { parse } from 'csv-parse';
-import path from 'path';
 import { UrlSet, XrayConfig } from '../types';
+import { createReadStream } from 'fs';
+import readline from 'readline';
+import { Decompressor } from 'xz';
 
 export class ConfigManager {
   private configPath: string;
@@ -50,6 +52,31 @@ export class ConfigManager {
         .on('error', reject);
     });
   }
+
+  async loadUrlsFromXZCompression(xzPath: string): Promise<string[]> {
+    const decompressor = new Decompressor();
+    const readStream = createReadStream(xzPath);
+    const rl = readline.createInterface({
+      input: readStream.pipe(decompressor)
+    });
+    const urls: string[] = [];
+    for await (const line of rl) {
+      urls.push(line.trim());
+    }
+    return urls;
+  }
+
+  async getUrlsForCompressedSet(setName: string): Promise<string[]> {
+    const config = await this.loadConfig();
+    const urlSet = config.urlSets.find((set: UrlSet) => set.name === setName && set.enabled);
+    
+    if (!urlSet) {
+      throw new Error(`URL set "${setName}" not found or not enabled`);
+    }
+
+    return this.loadUrlsFromXZCompression(urlSet.csvPath);
+  }
+
 
   async getUrlsForSet(setName: string): Promise<string[]> {
     const config = await this.loadConfig();
