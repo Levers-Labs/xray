@@ -10,6 +10,7 @@ raw_crawl_dns/
 raw_crawl_content/
 evaluated_rules/
 crawl_failures/
+headers_and_bodies/
 
 # Environment variables
 .env

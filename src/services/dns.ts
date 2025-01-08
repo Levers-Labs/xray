@@ -7,7 +7,7 @@ const lookup = promisify(dns.lookup);
 const resolveCname = promisify(dns.resolveCname);
 const whoisLookup = promisify(whois.lookup) as (hostname: string) => Promise<string>;
 
-type ParsedWhois = Omit<DnsInfo, 'cname' | 'hostname' | 'ipv4' | 'ipv6'>;
+type ParsedWhois = Omit<DnsInfo, 'cname' | 'hostname' | 'ipv4' | 'ipv6'> & { raw: string };
 
 async function parseWhoisData(data: string): Promise<ParsedWhois> {
   console.log('\nRaw WHOIS data:', data);
@@ -21,7 +21,8 @@ async function parseWhoisData(data: string): Promise<ParsedWhois> {
     status: [],
     registrantOrganization: "Unknown",
     registrantCountry: "Unknown",
-    whoisServer: "Unknown"
+    whoisServer: "Unknown",
+    raw: data
   };
 
   try {

@@ -16,26 +16,42 @@ export async function crawlWebsite(
   let lastError: any;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
-        method: "POST",
-        headers: {
-            "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
-            "Content-Type": "application/json",
-          } as any,
-          body: JSON.stringify({
-          projectId: process.env.BROWSERBASE_PROJECT_ID,
-          browserSettings: {
-            advancedStealth: true, // Needed for the best anti-bot bypassing.
-          },
-          proxies: true, // You can disable these if you don't need them. I'd recommend disabling for the first request.
-        }),
-      });
+    const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
+      method: "POST",
+      headers: {
+          "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
+          "Content-Type": "application/json",
+        } as any,
+        body: JSON.stringify({
+        projectId: process.env.BROWSERBASE_PROJECT_ID,
+        browserSettings: {
+          advancedStealth: true, // Needed for the best anti-bot bypassing.
+        },
+        proxies: true, // You can disable these if you don't need them. I'd recommend disabling for the first request.
+      }),
+    });
 
-      const session = await sessionRequest.json();
+    const session = await sessionRequest.json();
+    try {
+      // const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
+      //   method: "POST",
+      //   headers: {
+      //       "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
+      //       "Content-Type": "application/json",
+      //     } as any,
+      //     body: JSON.stringify({
+      //     projectId: process.env.BROWSERBASE_PROJECT_ID,
+      //     browserSettings: {
+      //       advancedStealth: true, // Needed for the best anti-bot bypassing.
+      //     },
+      //     proxies: true, // You can disable these if you don't need them. I'd recommend disabling for the first request.
+      //   }),
+      // });
+
+      // const session = await sessionRequest.json();
 
       browser = await puppeteer.connect({
-        browserWSEndpoint: session.connectUrl
+        browserWSEndpoint: session.connectUrl || '',
       });
 
       const pages = await browser.pages();
@@ -106,80 +122,14 @@ export async function crawlWebsite(
 
       return crawlResult;
     } catch (error) {
-      console.error(`Attempt ${attempt + 1} failed with Puppeteer:`, error);
-
-      // Fallback to Playwright
-      try {
-        browser = await playwright.chromium.launch({
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        });
-
-        const context = await browser.newContext();
-        const page = await context.newPage();
-        await page.setViewportSize({ width: 1280, height: 800 });
-
-        const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 10000 });
-        if (!response) throw new Error('No response received from page');
-
-        const headers = response.headers();
-        const html = await page.content();
-        const js_urls = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('script[src]'))
-            .map((el) => el.getAttribute('src'))
-            .filter(Boolean) as string[]
-        );
-        const css_urls = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
-            .map((el) => el.getAttribute('href'))
-            .filter(Boolean) as string[]
-        );
-
-        const windowProps = await page.evaluate(() => {
-          const seen = new WeakSet();
-          const getCircularReplacer = () => (key: string, value: any) =>
-            typeof value === 'object' && value !== null
-              ? seen.has(value)
-                ? '[Circular]'
-                : (seen.add(value), value)
-              : value;
-
-          const windowCopy: any = {};
-          for (const prop in window) {
-            try {
-              if (typeof window[prop] !== 'function') windowCopy[prop] = window[prop];
-            } catch {
-              windowCopy[prop] = '[Unable to serialize]';
-            }
-          }
-          return JSON.stringify(windowCopy, getCircularReplacer());
-        });
-
-        const crawlResult: CrawlResult = {
-          crawl_time: new Date().toISOString(),
-          url,
-          headers,
-          window: JSON.parse(windowProps),
-          html,
-          js_urls,
-          css_urls,
-        };
-
-        await ruleManager.evaluateAllRules(
-          url,
-          crawlResult.crawl_time,
-          crawlResult.headers,
-          crawlResult.window,
-          crawlResult.html,
-          loadToS3,
-          saveToLocal
-        );
-
-        return crawlResult;
-      } catch (playwrightError) {
-        console.error(`Attempt ${attempt + 1} failed with Playwright:`, playwrightError);
-        lastError = playwrightError;
-      }
+      console.log("***********************************************");
+      console.log("***********************************************");
+      console.log(session.connectUrl)
+      console.log("***********************************************");
+      console.log("***********************************************");
+      console.log(`Attempt ${attempt + 1} failed with Puppeteer:`, error);
+      lastError = error;
+      continue;
     } finally {
       if (browser) await browser.close();
     }

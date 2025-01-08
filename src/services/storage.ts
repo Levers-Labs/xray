@@ -12,6 +12,55 @@ export class StorageService {
     return `${timestamp}_${sanitizedUrl}.json`;
   }
 
+  async saveHeadersAndBodyBatch(data: {
+    url: string;
+    headers: Record<string, any>;
+    body: string;
+    statusCode: number;
+    timestamp: string;
+  }[]): Promise<void> {
+    try {
+      const dirPath = 'headers_and_bodies';
+      
+      await fs.mkdir(dirPath, { recursive: true });
+
+      for (const item of data) {
+        const filename = this.getFilename(item.url);
+        await fs.writeFile(
+          path.join(dirPath, filename),
+          JSON.stringify(item, null, 2),
+          'utf8'
+        );
+      }
+    } catch (error: any) {
+      console.error(`Error saving headers and body: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async saveHeadersAndBody(data: {
+    url: string;
+    headers: Record<string, any>;
+    body: string;
+    statusCode: number;
+    timestamp: string;
+  }): Promise<void> {
+    try {
+      const filename = this.getFilename(data.url);
+      const dirPath = 'headers_and_bodies';
+      
+      await fs.mkdir(dirPath, { recursive: true });
+      await fs.writeFile(
+        path.join(dirPath, filename),
+        JSON.stringify(data, null, 2),
+        'utf8'
+      );
+    } catch (error: any) {
+      console.error(`Error saving headers and body: ${error.message}`);
+      throw error;
+    }
+  }
+
   async saveDnsInfo(dnsInfo: DnsInfo, url: string): Promise<void> {
     try {
       const filename = this.getFilename(url);
