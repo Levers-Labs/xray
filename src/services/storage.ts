@@ -21,17 +21,20 @@ export class StorageService {
   }[]): Promise<void> {
     try {
       const dirPath = 'headers_and_bodies';
+      const uniqueId = uuidv4();
+      const filename = `${uniqueId}.ndjson`;
       
       await fs.mkdir(dirPath, { recursive: true });
 
-      for (const item of data) {
-        const filename = this.getFilename(item.url);
-        await fs.writeFile(
-          path.join(dirPath, filename),
-          JSON.stringify(item, null, 2),
-          'utf8'
-        );
-      }
+      const ndjsonContent = data
+        .map(item => JSON.stringify(item))
+        .join('\n');
+
+      await fs.writeFile(
+        path.join(dirPath, filename),
+        ndjsonContent,
+        'utf8'
+      );
     } catch (error: any) {
       console.error(`Error saving headers and body: ${error.message}`);
       throw error;

@@ -9,15 +9,17 @@ import type { UrlSet } from './types';
 import downloadCruxDomains from './services/pullCruxDomains';
 import { v4 as uuidv4 } from 'uuid';
 import pLimit from 'p-limit';
-
+import puppeteer, { Browser as PuppeteerBrowser } from 'puppeteer';
 import { request } from 'undici';
-
 
 const rateLimit = pLimit(50); // Adjust based on your needs and target server limitations
 
-async function fetchWithRetry(url: string, retries = 3, delay = 300): Promise<{ headers: Record<string, string>, body: string, statusCode: number }> {
+async function fetchWithRetry(url: string, retries = 1, delay = 300): Promise<{ headers: Record<string, string>, body: string, statusCode: number }> {
+  let statusCode;
+  let headers;
+  let body;
   try {
-    const { statusCode, headers, body } = await request(url, {
+    const requestReponse = await request(url, {
       method: 'GET',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -26,30 +28,49 @@ async function fetchWithRetry(url: string, retries = 3, delay = 300): Promise<{ 
       }
     });
 
+    statusCode = requestReponse.statusCode;
+    headers = requestReponse.headers;
+    body = await requestReponse.body.text();
 
-    const bodyContent = await body.text();
-    return { headers: headers as Record<string, string>, body: bodyContent, statusCode: statusCode };
+    if (statusCode !== 200) {
+      const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: {
+            "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
+            "Content-Type": "application/json",
+          } as any,
+          body: JSON.stringify({
+          projectId: process.env.BROWSERBASE_PROJECT_ID,
+          browserSettings: {
+            advancedStealth: true, // Needed for the best anti-bot bypassing.
+          },
+          proxies: false, // You can disable these if you don't need them. I'd recommend disabling for the first request.
+        }),
+      });
+      const session = await sessionRequest.json();
+      const browser = await puppeteer.connect({
+        browserWSEndpoint: session.connectUrl || '',
+      });
+
+      const pages = await browser.pages();
+      const page = pages[0];
+      const response = await page.goto(url, {
+        waitUntil: 'networkidle0',
+        timeout: 30000
+      });
+      statusCode = response?.status();
+      headers = response?.headers();
+      body = await response?.text();
+      await browser.close();
+    }
+
+    return { headers: headers as Record<string, string>, body: body ?? '', statusCode: statusCode ?? 500 };
   } catch (error) {
     if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchWithRetry(url, retries - 1, delay * 2);
     }
     throw error;
-  }
-}
-
-async function processUrl(url: string): Promise<void> {
-  try {
-    const { headers, body, statusCode } = await rateLimit(() => fetchWithRetry(url));
-    storage.saveHeadersAndBody({
-      url,
-      headers,
-      body,
-      statusCode,
-      timestamp: new Date().toISOString()
-    }).catch(err => console.error(`Error saving data for ${url}:`, err));
-  } catch (error: any) {
-    console.error(`Failed to process ${url}: ${error.message}`);
   }
 }
 
@@ -374,10 +395,10 @@ program
   .command('get-headers-and-bodies')
   .description('Get headers and bodies for all URLs in enabled sets')
   .argument('<setName>', 'Name of the URL set to crawl')
-  .option('-b, --batch-size <number>', 'Number of concurrent requests', '1000')
+  .option('-c, --concurrency <number>', 'Number of concurrent requests', '1000')
   .option('--start-percentage <number>', 'Start percentage of URLs to process', '0')
   .option('--end-percentage <number>', 'End percentage of URLs to process', '10')
-  .action(async (setName: string, options: { batchSize: string; startPercentage: string; endPercentage: string }) => {
+  .action(async (setName: string, options: { concurrency: string; startPercentage: string; endPercentage: string }) => {
     try {
       const urls = await configManager.getUrlsForCompressedSet(setName);
       console.log(`Found ${urls.length} URLs in set "${setName}"`);
@@ -394,8 +415,8 @@ program
       const endIndex = Math.ceil((endPercentage / 100) * totalUrls);
       const subsetUrls = urls.slice(startIndex, endIndex);
 
-      const concurrency = parseInt(options.batchSize);
-      const batchSize = 250;
+      const concurrency = parseInt(options.concurrency);
+      const batchSize = 100;
       let batch: Array<{ url: string; headers: Record<string, string>; body: string; statusCode: number; timestamp: string }> = [];
 
       const processUrlWithBatch = async (url: string) => {
