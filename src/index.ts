@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, program as pprogram } from 'commander';
 import { getDnsInfo } from './services/dns';
 import { crawlWebsite } from './services/crawler';
 import { StorageService } from './services/storage';
@@ -8,6 +8,71 @@ import { RuleManager } from './services/ruleManager';
 import type { UrlSet } from './types';
 import downloadCruxDomains from './services/pullCruxDomains';
 import { v4 as uuidv4 } from 'uuid';
+import pLimit from 'p-limit';
+import puppeteer, { Browser as PuppeteerBrowser } from 'puppeteer';
+import { request } from 'undici';
+
+const rateLimit = pLimit(50); // Adjust based on your needs and target server limitations
+
+async function fetchWithRetry(url: string, retries = 1, delay = 300): Promise<{ headers: Record<string, string>, body: string, statusCode: number }> {
+  let statusCode;
+  let headers;
+  let body;
+  try {
+    const requestReponse = await request(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Connection': 'keep-alive'
+      }
+    });
+
+    statusCode = requestReponse.statusCode;
+    headers = requestReponse.headers;
+    body = await requestReponse.body.text();
+
+    if (statusCode !== 200) {
+      const sessionRequest = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: {
+            "X-BB-API-KEY": process.env.BROWSERBASE_API_KEY,
+            "Content-Type": "application/json",
+          } as any,
+          body: JSON.stringify({
+          projectId: process.env.BROWSERBASE_PROJECT_ID,
+          browserSettings: {
+            advancedStealth: true, // Needed for the best anti-bot bypassing.
+          },
+          proxies: false, // You can disable these if you don't need them. I'd recommend disabling for the first request.
+        }),
+      });
+      const session = await sessionRequest.json();
+      const browser = await puppeteer.connect({
+        browserWSEndpoint: session.connectUrl || '',
+      });
+
+      const pages = await browser.pages();
+      const page = pages[0];
+      const response = await page.goto(url, {
+        waitUntil: 'networkidle0',
+        timeout: 30000
+      });
+      statusCode = response?.status();
+      headers = response?.headers();
+      body = await response?.text();
+      await browser.close();
+    }
+
+    return { headers: headers as Record<string, string>, body: body ?? '', statusCode: statusCode ?? 500 };
+  } catch (error) {
+    if (retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return fetchWithRetry(url, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
 
 const storage = new StorageService();
 const configManager = new ConfigManager();
@@ -198,17 +263,46 @@ program
   .argument('<setName>', 'Name of the URL set to crawl')
   .option('--s3', 'Save crawl results to S3')
   .option('--no-local', 'Do not save crawl results locally')
-  .action(async (setName: string, options: { s3?: boolean, local: boolean }) => {
+  .option('--is-crux', 'Crawl CrUX URLs')
+  .option('-b, --batch-size <number>', 'Number of concurrent crawls', '25')
+  .action(async (setName: string, options: { 
+    s3?: boolean, 
+    local: boolean, 
+    isCrux: boolean,
+    batchSize: string 
+  }) => {
     try {
       const loadToS3 = options.s3;
       const saveToLocal = options.local;
-      const urls = await configManager.getUrlsForSet(setName);
+      const isCrux = options.isCrux;
+      const concurrency = parseInt(options.batchSize, 10);
+
+      let urls;
+      if (isCrux) {
+        await downloadCruxDomains();
+        urls = await configManager.getUrlsForCompressedSet(setName);
+      } else {
+        urls = await configManager.getUrlsForSet(setName);
+      }
+
       console.log(`Found ${urls.length} URLs in set "${setName}"`);
       
-      for (const url of urls) {
-        console.log(`\nProcessing ${url}...`);
-        await crawlUrl(url, loadToS3, saveToLocal);
+      // Process URLs in chunks of 1000
+      const chunkSize = 1000;
+      for (let i = 0; i < urls.length; i += chunkSize) {
+        const chunk = urls.slice(i, i + chunkSize);
+        console.log(`Processing chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(urls.length/chunkSize)}`);
+        
+        const limit = pLimit(concurrency);
+        const tasks = chunk.map(url => limit(async () => {
+          console.log(`Processing ${url}...`);
+          await crawlUrl(url, loadToS3, saveToLocal);
+        }));
+
+        await Promise.all(tasks);
       }
+
+      console.log('\nCompleted processing all URLs');
     } catch (error: any) {
       console.error(`Error processing URL set: ${error.message}`);
       process.exit(1);
@@ -293,6 +387,195 @@ program
       });
     } catch (error: any) {
       console.error(`Error listing URL sets: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('get-headers-and-bodies')
+  .description('Get headers and bodies for all URLs in enabled sets')
+  .argument('<setName>', 'Name of the URL set to crawl')
+  .option('-c, --concurrency <number>', 'Number of concurrent requests', '1000')
+  .option('--start-percentage <number>', 'Start percentage of URLs to process', '0')
+  .option('--end-percentage <number>', 'End percentage of URLs to process', '10')
+  .action(async (setName: string, options: { concurrency: string; startPercentage: string; endPercentage: string }) => {
+    try {
+      const urls = await configManager.getUrlsForCompressedSet(setName);
+      console.log(`Found ${urls.length} URLs in set "${setName}"`);
+
+      const totalUrls = urls.length;
+      const startPercentage = parseFloat(options.startPercentage);
+      const endPercentage = parseFloat(options.endPercentage);
+
+      if (startPercentage >= endPercentage || startPercentage < 0 || endPercentage > 100) {
+        throw new Error('Invalid percentage range. Ensure 0 <= startPercentage < endPercentage <= 100.');
+      }
+
+      const startIndex = Math.floor((startPercentage / 100) * totalUrls);
+      const endIndex = Math.ceil((endPercentage / 100) * totalUrls);
+      const subsetUrls = urls.slice(startIndex, endIndex);
+
+      const concurrency = parseInt(options.concurrency);
+      const batchSize = 100;
+      let batch: Array<{ url: string; headers: Record<string, string>; body: string; statusCode: number; timestamp: string }> = [];
+
+      const processUrlWithBatch = async (url: string) => {
+        try {
+          const { headers, body, statusCode } = await rateLimit(() => fetchWithRetry(url));
+          batch.push({
+            url,
+            headers,
+            body,
+            statusCode,
+            timestamp: new Date().toISOString()
+          });
+
+          if (batch.length >= batchSize) {
+            await storage.saveHeadersAndBodyBatch(batch);
+            batch = [];
+          }
+        } catch (error: any) {
+          console.error(`Failed to process ${url}: ${error.message}`);
+        }
+      };
+
+      const limit = pLimit(concurrency);
+      const tasks = subsetUrls.map(url => limit(() => processUrlWithBatch(url)));
+
+      let processedUrls = 0;
+      await Promise.all(tasks.map(task => task.then(() => {
+        processedUrls++;
+        if (processedUrls % 100 === 0) {
+          console.log(`Progress: ${processedUrls}/${subsetUrls.length} URLs processed`);
+        }
+      })));
+
+      // Write any remaining items in the batch
+      if (batch.length > 0) {
+        await storage.saveHeadersAndBodyBatch(batch);
+      }
+
+      console.log('Completed processing all URLs');
+    } catch (error: any) {
+      console.error(`Error processing URLs: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('get-windows')
+  .description('Get window properties for all URLs in enabled sets')
+  .argument('<setName>', 'Name of the URL set to crawl')
+  .option('-b, --batch-size <number>', 'Number of concurrent requests', '10')
+  .option('--start-percentage <number>', 'Start percentage of URLs to process', '0')
+  .option('--end-percentage <number>', 'End percentage of URLs to process', '10')
+  .action(async (setName: string, options: { batchSize: string; startPercentage: string; endPercentage: string }) => {
+    try {
+      const urls = await configManager.getUrlsForCompressedSet(setName);
+      console.log(`Found ${urls.length} URLs in set "${setName}"`);
+
+      const totalUrls = urls.length;
+      const startPercentage = parseFloat(options.startPercentage);
+      const endPercentage = parseFloat(options.endPercentage);
+
+      if (startPercentage >= endPercentage || startPercentage < 0 || endPercentage > 100) {
+      throw new Error('Invalid percentage range. Ensure 0 <= startPercentage < endPercentage <= 100.');
+      }
+
+      const startIndex = Math.floor((startPercentage / 100) * totalUrls);
+      const endIndex = Math.ceil((endPercentage / 100) * totalUrls);
+      const subsetUrls = urls.slice(startIndex, endIndex);
+
+      const concurrency = parseInt(options.batchSize);
+      const chunkSize = 100; // Process in smaller chunks for better memory management
+
+      let processedUrls = 0;
+      const limit = pLimit(concurrency);
+
+      // Process URLs in smaller chunks to prevent memory issues
+      for (let i = 0; i < subsetUrls.length; i += chunkSize) {
+      const chunk = subsetUrls.slice(i, i + chunkSize);
+      const tasks = chunk.map(url => limit(async () => {
+        try {
+        const crawlResult = await crawlWebsite(url, 1, false, false);
+        if (crawlResult) {
+          await storage.saveCrawlContent(crawlResult);
+        }
+
+        processedUrls++;
+        if (processedUrls % 10 === 0) {
+          console.log(`Progress: ${processedUrls}/${subsetUrls.length} URLs processed`);
+        }
+        } catch (error: any) {
+        console.error(`Failed to process ${url}: ${error.message}`);
+        }
+      }));
+
+      await Promise.all(tasks);
+      // Add small delay between chunks to prevent rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      console.log('Completed processing all URLs');
+    } catch (error: any) {
+      console.error(`Error processing URLs: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('get-dns-whois-ssl')
+  .description('Get DNS, WHOIS, and SSL info for all URLs in enabled sets')
+  .argument('<setName>', 'Name of the URL set to crawl')
+  .option('-b, --batch-size <number>', 'Number of concurrent requests', '25')
+  .option('--start-percentage <number>', 'Start percentage of URLs to process', '0')
+  .option('--end-percentage <number>', 'End percentage of URLs to process', '10')
+  .action(async (setName: string, options: { batchSize: string; startPercentage: string; endPercentage: string }) => {
+    try {
+      const urls = await configManager.getUrlsForCompressedSet(setName);
+      console.log(`Found ${urls.length} URLs in set "${setName}"`);
+
+      const totalUrls = urls.length;
+      const startPercentage = parseFloat(options.startPercentage);
+      const endPercentage = parseFloat(options.endPercentage);
+
+      if (startPercentage >= endPercentage || startPercentage < 0 || endPercentage > 100) {
+      throw new Error('Invalid percentage range. Ensure 0 <= startPercentage < endPercentage <= 100.');
+      }
+
+      const startIndex = Math.floor((startPercentage / 100) * totalUrls);
+      const endIndex = Math.ceil((endPercentage / 100) * totalUrls);
+      const subsetUrls = urls.slice(startIndex, endIndex);
+
+      const concurrency = parseInt(options.batchSize);
+      const chunkSize = 100; // Process in smaller chunks for better memory management
+
+      let processedUrls = 0;
+      const limit = pLimit(concurrency);
+
+      // Process URLs in smaller chunks to prevent memory issues
+      for (let i = 0; i < subsetUrls.length; i += chunkSize) {
+      const chunk = subsetUrls.slice(i, i + chunkSize);
+      const tasks = chunk.map(url => limit(async () => {
+        try {
+        await crawlUrl(url, false, true);
+        processedUrls++;
+        if (processedUrls % 10 === 0) {
+          console.log(`Progress: ${processedUrls}/${subsetUrls.length} URLs processed`);
+        }
+        } catch (error: any) {
+        console.error(`Failed to process ${url}: ${error.message}`);
+        }
+      }));
+
+      await Promise.all(tasks);
+      // Add small delay between chunks to prevent rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      console.log('Completed processing all URLs');
+    } catch (error: any) {
+      console.error(`Error processing URLs: ${error.message}`);
       process.exit(1);
     }
   });
